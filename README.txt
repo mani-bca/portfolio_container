@@ -1,0 +1,1 @@
+Greetings, I'm Namachi S, a driven 22-year-old professional with one year of practical experience as a QA Analyst. I'm passionate about exploring other domains, particularly Automation Testing, as I recognize the significance of adaptability in the constantly evolving technology landscape.
