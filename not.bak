@@ -1,0 +1,139 @@
+
+#!/bin/bash
+
+# Set your variables
+CLUSTER_NAME="ted"  # Replace with your actual cluster name
+REGION="us-east-1"
+NODE_GROUP_NAME="self-managed-nodes"
+INSTANCE_TYPE="t2.medium"
+NODE_COUNT=2
+
+# Get VPC info from the cluster
+VPC_ID=$(aws eks describe-cluster --name $CLUSTER_NAME --query "cluster.resourcesVpcConfig.vpcId" --output text)
+SUBNET_IDS=$(aws eks describe-cluster --name $CLUSTER_NAME --query "cluster.resourcesVpcConfig.subnetIds" --output text | tr '\t' ',')
+CLUSTER_SG=$(aws eks describe-cluster --name $CLUSTER_NAME --query "cluster.resourcesVpcConfig.clusterSecurityGroupId" --output text)
+
+# Get latest Amazon Linux 2 AMI optimized for EKS
+AMI_ID=$(aws ssm get-parameter --name /aws/service/eks/optimized-ami/1.32/amazon-linux-2/recommended/image_id --query "Parameter.Value" --output text)
+
+# Create IAM resources for nodes
+echo "Creating IAM role..."
+aws iam create-role --role-name $NODE_GROUP_NAME-role --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+
+echo "Attaching policies..."
+aws iam attach-role-policy --role-name $NODE_GROUP_NAME-role --policy-arn arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+aws iam attach-role-policy --role-name $NODE_GROUP_NAME-role --policy-arn arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+aws iam attach-role-policy --role-name $NODE_GROUP_NAME-role --policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+echo "Creating instance profile..."
+aws iam create-instance-profile --instance-profile-name $NODE_GROUP_NAME-profile
+
+echo "Adding role to instance profile..."
+aws iam add-role-to-instance-profile --role-name $NODE_GROUP_NAME-role --instance-profile-name $NODE_GROUP_NAME-profile
+
+# Wait for IAM resources to propagate
+echo "Waiting for IAM resources to propagate (30 seconds)..."
+sleep 30
+
+# Create user data for node bootstrap
+cat > user-data.txt << EOF
+#!/bin/bash
+/etc/eks/bootstrap.sh $CLUSTER_NAME
+EOF
+
+# Create launch template
+echo "Creating launch template..."
+aws ec2 create-launch-template \
+  --launch-template-name $NODE_GROUP_NAME-template \
+  --version-description "Initial version" \
+  --launch-template-data "{
+    \"ImageId\":\"$AMI_ID\",
+    \"InstanceType\":\"$INSTANCE_TYPE\",
+    \"SecurityGroupIds\":[\"$CLUSTER_SG\"],
+    \"UserData\":\"$(base64 -w 0 user-data.txt)\",
+    \"IamInstanceProfile\":{\"Name\":\"$NODE_GROUP_NAME-profile\"},
+    \"TagSpecifications\":[{
+      \"ResourceType\":\"instance\",
+      \"Tags\":[
+        {\"Key\":\"Name\",\"Value\":\"$CLUSTER_NAME-node\"},
+        {\"Key\":\"kubernetes.io/cluster/$CLUSTER_NAME\",\"Value\":\"owned\"}
+      ]
+    }]
+  }"
+
+# Wait for launch template to be fully available
+echo "Waiting for launch template to be available (10 seconds)..."
+sleep 10
+
+# Create Auto Scaling group
+echo "Creating Auto Scaling group..."
+aws autoscaling create-auto-scaling-group \
+  --auto-scaling-group-name $NODE_GROUP_NAME-asg \
+  --launch-template "LaunchTemplateName=$NODE_GROUP_NAME-template,Version=\$Latest" \
+  --min-size $NODE_COUNT \
+  --max-size $NODE_COUNT \
+  --desired-capacity $NODE_COUNT \
+  --vpc-zone-identifier $SUBNET_IDS \
+  --tags "Key=kubernetes.io/cluster/$CLUSTER_NAME,Value=owned,PropagateAtLaunch=true"
+
+# Create or update aws-auth ConfigMap
+ROLE_ARN="arn:aws:iam::$(aws sts get-caller-identity --query 'Account' --output text):role/$NODE_GROUP_NAME-role"
+
+cat > aws-auth-cm.yaml << EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aws-auth
+  namespace: kube-system
+data:
+  mapRoles: |
+    - rolearn: $ROLE_ARN
+      username: system:node:{{EC2PrivateDNSName}}
+      groups:
+        - system:bootstrappers
+        - system:nodes
+EOF
+
+# Configure kubectl
+echo "Configuring kubectl..."
+aws eks update-kubeconfig --name $CLUSTER_NAME --region $REGION
+
+# Apply the ConfigMap
+echo "Applying aws-auth ConfigMap..."
+kubectl apply -f aws-auth-cm.yaml
+
+echo "Self-managed nodes setup is complete! Nodes should join the cluster in 3-5 minutes."
+echo "Run 'kubectl get nodes --watch' to monitor the nodes joining."
+
+
+
+######################################################3
+
+~ $ kubectl create namespace portfolio
+curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+chmod 700 get_helm.sh
+./get_helm.sh
+
+# Add the NGINX Ingress Helm repository
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+
+# Update the repository
+helm repo update
+
+# Install the NGINX Ingress Controller
+helm install nginx-ingress ingress-nginx/ingress-nginx \
+  --namespace ingress-nginx \
+  --create-namespace \
+  --set controller.replicaCount=2 \
+  --set controller.resources.requests.cpu=100m \
+  --set controller.resources.requests.memory=200Mi \
+  --set controller.resources.limits.cpu=200m \
+  --set controller.resources.limits.memory=400Mi \
+  --set controller.service.type=LoadBalancer
+
+
+# Check if the ingress controller pods are running
+kubectl get pods -n ingress-nginx
+
+# Check if the load balancer service is created
+kubectl get svc -n ingress-nginx

@@ -71,10 +71,9 @@ metadata:
     # nginx.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
   rules:
-  - host:
-    http:
+  - http:
       paths:
-      - path: /
+      - path: /portfolio
         pathType: Prefix
         backend:
           service:
