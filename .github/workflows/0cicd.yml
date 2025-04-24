@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
 
 env:
-  ECR_REPOSITORY: 211125578268.dkr.ecr.us-east-1.amazonaws.com/portfolio
-  AWS_REGION: us-east-1  # Change to your AWS region
-  EKS_CLUSTER_NAME: ted # Change to your cluster name
+  ECR_REPOSITORY: 767398122712.dkr.ecr.us-east-1.amazonaws.com/portfolio
+  AWS_REGION: us-east-1  
+  EKS_CLUSTER_NAME: ted 
   K8S_NAMESPACE: portfolio
   APP_NAME: portfolio
 
