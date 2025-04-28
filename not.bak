@@ -1,6 +1,6 @@
 
 #!/bin/bash
-
+e
 # Set your variables
 CLUSTER_NAME="ted"  # Replace with your actual cluster name
 REGION="us-east-1"
